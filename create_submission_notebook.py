@@ -49,6 +49,10 @@ The objective of this challenge is to engineer an automated, state-of-the-art **
 ---
 
 ### 2. Dual-Branch Multimodal Architecture & Methodology
+<p align="center">
+  <img src="pipeline_architecture.gif" alt="Multimodal Grammar Scoring Pipeline Architecture" width="100%" />
+</p>
+
 While acoustic features (pitch, speech rate, formants) effectively measure spoken delivery and articulation fluency, **grammar is fundamentally a linguistic, syntactic, and morphological phenomenon**. An audio-only model plateaus at Pearson $r \\approx 0.81$. To surpass human-level consistency, we engineered a **dual-branch multimodal fusion pipeline**:
 
 1. **Branch A -- Acoustic & Prosodic Engine (218 Descriptors):**
