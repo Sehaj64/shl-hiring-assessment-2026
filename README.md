@@ -169,33 +169,33 @@ python -m nbconvert --to notebook --execute --inplace Grammar_Scoring_Engine_SHL
 
 ---
 
-## 7. Technical Interview Defense Guide (For SHL AI Labs)
+## 7. Architectural Decisions & Design Rationale
 
-### Q1: Why is a Multimodal (Acoustic + Linguistic) approach superior to an Audio-Only or Text-Only model for Spoken Grammar Scoring?
-* **Acoustic-Only Limitations:** Acoustic features (pitch, speech rate, spectral formants) capture vocal confidence, prosodic pacing, and articulation clarity. However, grammar is fundamentally a property of syntax, morphology, and lexical cohesion. Two candidates can speak with identical pitch inflection, yet one speaks grammatically flawed English while the other speaks flawless complex clauses. An acoustic model alone hits a hard ceiling around $r \approx 0.81$.
-* **Text-Only Limitations:** A pure transcript model misses spoken hesitations, disfluency duration, vocal filler pauses, and speech rate.
-* **The Multimodal Advantage:** Combining 218 acoustic descriptors with 50 linguistic & POS syntactic descriptors increased Pearson correlation to **$0.8424$** and lowered RMSE to **$0.6690$**.
+### 7.1 Multimodal Fusion vs. Unimodal Modeling
+* **Acoustic-Only Limitations:** Acoustic features (pitch dynamics, formants, speech tempo) effectively measure spoken delivery and fluency. However, grammatical proficiency is inherently syntactic and lexical. Two speakers can exhibit similar pitch variation while producing vastly different clause complexity. In isolation, acoustic modeling plateaus at Pearson $r \approx 0.8105$.
+* **Text-Only Limitations:** Transcripts alone discard prosodic hesitation, filler durations, and cadence.
+* **Multimodal Advantage:** Fusing 218 acoustic descriptors with 50 linguistic and POS syntactic indicators captures both articulation dynamics and structural syntax, increasing Pearson correlation to **$0.8424$** and reducing RMSE to **$0.6690$**.
 
-### Q2: Why decouple ASR transcription + Tabular Gradient Boosting instead of end-to-end fine-tuning a Large Speech Transformer (e.g., Wav2Vec 2.0 / Whisper)?
-1. **Sample Size & Overfitting Risk:** The dataset contains only 769 training audio recordings. Fine-tuning a 300M+ parameter transformer on 769 long audio samples (45–60s) has extreme risk of overfitting and memorizing acoustic idiosyncrasies.
-2. **Computational Tractability:** Processing 60-second audio files through deep cross-attention layers requires enormous GPU VRAM. Decoupling transcription (using pre-trained, frozen `faster-whisper`) and acoustic feature extraction (`openSMILE`) allows rigorous 10-fold cross-validation in under 3 minutes on standard hardware.
-3. **Interpretability & Explainability:** In enterprise HR assessment (SHL's core mission), adverse impact and model explainability are regulatory requirements. Tabular feature attribution (SHAP, feature importances) allows examiners to explicitly show *why* a candidate scored 3.0 vs 4.0 (e.g., clause subordination, vocabulary richness, pause regularity).
+### 7.2 Decoupled Feature Architecture vs. End-to-End Fine-Tuning
+1. **Sample Efficiency on Constrained Data:** With 769 training recordings, end-to-end fine-tuning of large speech transformers (e.g., Wav2Vec 2.0 / Whisper) introduces high variance and overfitting risks on background acoustic artifacts.
+2. **Computational Reproducibility:** Decoupling frozen ASR transcription (`faster-whisper`) and standardized acoustic profiling (`openSMILE`) enables rigorous 10-fold cross-validation in under 3 minutes on standard hardware without GPU cluster dependencies.
+3. **Model Explainability & Auditing:** In assessment environments, model decisions must be auditable. Structured tabular features enable direct interpretability (e.g., clause subordination, vocabulary richness, pause regularity) required for adverse impact and validity analyses.
 
-### Q3: How does the engine handle silence, background hiss, or non-speaking candidates?
-* Analysis of the dataset revealed 37 training samples with ground-truth score `0.0`. Acoustic spectral analysis showed they were all synthesized white noise / microphone hiss (`audio_50xx.wav`).
-* Human speech is fundamentally periodic with low spectral flatness ($< 0.12$). White noise is stochastic with uniform power across frequencies, resulting in high spectral flatness ($> 0.47$) and elevated spectral centroid ($> 3800$ Hz).
-* We engineered a calibrated deterministic gating rule: if $\text{Spectral Flatness} > 0.40$ and $\text{Spectral Centroid} > 3500\text{ Hz}$, the prediction is clamped to `0.0`. This rule achieves 100% precision on noise samples without false-flagging spoken responses.
+### 7.3 Acoustic Anomaly & Silence Gating
+* Exploratory data analysis identified 37 samples with ground-truth score `0.0`. Spectral analysis confirmed these were synthetic white noise / microphone hiss (`audio_50xx.wav`).
+* Human speech exhibits harmonic periodicity with low spectral flatness ($< 0.12$). Synthetic noise exhibits stochastic energy across the spectrum, resulting in high spectral flatness ($> 0.47$) and elevated spectral centroid ($> 3800$ Hz).
+* A calibrated deterministic filter (`Spectral Flatness > 0.40` and `Spectral Centroid > 3500 Hz`) isolates non-speech inputs with 100% precision, clamping predictions to `0.0`.
 
-### Q4: Why use a 5-model Super-Ensemble with SLSQP optimization instead of a single model?
-* Different algorithms have fundamentally complementary inductive biases:
-  * **CatBoost (33.9% weight):** Oblivious (symmetric) decision trees excel at smooth continuous regression over correlated acoustic and linguistic features without greedy bias.
-  * **XGBoost (24.2% weight):** Depth-wise tree growth captures localized non-linear interactions between clause subordination and speaking rate.
-  * **LightGBM (19.1% weight):** Leaf-wise tree splitting rapidly isolates sparse linguistic cues (such as rare modal verbs or complex sentence lengths).
-  * **Ridge Regression (22.8% weight):** L2-regularized linear model acts as a global monotonic stabilizer, ensuring tree models do not over-predict in regions with sparse training density.
-* SLSQP constrained quadratic optimization solves for the optimal combination on out-of-fold validation predictions, yielding lower RMSE and higher Pearson correlation than any individual model.
+### 7.4 Ensemble Diversity & Inductive Biases
+The ensemble combines models with complementary inductive biases:
+* **CatBoost (33.9% weight):** Oblivious (symmetric) decision trees provide uniform regularization and prevent greedy splits on correlated continuous descriptors.
+* **XGBoost (24.2% weight):** Depth-wise tree growth isolates localized interactions between syntactic complexity and speaking tempo.
+* **LightGBM (19.1% weight):** Leaf-wise splitting handles sparser linguistic markers (e.g., low-frequency modal verbs).
+* **Ridge Regression (22.8% weight):** L2-regularized linear model serves as a monotonic prior, preventing extreme predictions in sparse data regions.
+* Optimal blending weights are resolved via SLSQP constrained quadratic optimization on out-of-fold validation predictions.
 
-### Q5: How did you ensure zero data leakage and reliable generalization?
-1. **Stratified Discretized Folds:** Continuous targets were mapped to discrete strata to guarantee that the full distribution of low, medium, and high proficiency candidates is identically balanced across all 10 folds.
-2. **Out-of-Fold (OOF) Inference:** All ensemble blending weights and metric evaluations are computed strictly on out-of-fold validation sets, never on data seen during training.
-3. **Robust Median Imputation:** Imputation medians were computed fold-by-fold to prevent test-to-train information bleed.
-4. **Target Bounds Clamping:** All predictions are clipped strictly to $[0.0, 5.0]$, honoring the official Likert scoring rubric.
+### 7.5 Validation Rigor & Leakage Prevention
+1. **Stratified Discretized Folds:** Continuous targets were partitioned into discrete strata to guarantee balanced score distributions across all 10 folds.
+2. **Out-of-Fold (OOF) Inference:** All ensemble blending weights and metric evaluations are computed strictly on validation folds unseen during model training.
+3. **Fold-Isolated Imputation:** Missing value medians were computed strictly within training splits to prevent test-to-train bleed.
+4. **Target Bounds Clamping:** All predictions are clipped to $[0.0, 5.0]$, adhering to the official Likert rubric.
