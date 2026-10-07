@@ -56,10 +56,10 @@ flowchart TD
     D --> E["Stratified 10-Fold Cross-Validation"]
     
     subgraph Ensemble ["Ensemble Model Suite"]
-        E --> M1["CatBoost Regressor (34.2%)<br>Oblivious Symmetric Trees"]
-        E --> M2["XGBoost Regressor (22.9%)<br>Depth-Wise Gradient Boosting"]
-        E --> M3["LightGBM Regressor (20.1%)<br>Leaf-Wise Gradient Boosting"]
-        E --> M4["Ridge Regressor + RobustScaler (22.7%)<br>L2 Monotonic Global Regularization"]
+        E --> M1["CatBoost Regressor (33.9%)<br>Oblivious Symmetric Trees"]
+        E --> M2["XGBoost Regressor (24.2%)<br>Depth-Wise Gradient Boosting"]
+        E --> M3["LightGBM Regressor (19.1%)<br>Leaf-Wise Gradient Boosting"]
+        E --> M4["Ridge Regressor + RobustScaler (22.8%)<br>L2 Monotonic Global Regularization"]
         E --> M5["ExtraTrees Regressor (0.0%)<br>Extremely Randomized Trees"]
     end
     
@@ -100,14 +100,14 @@ flowchart TD
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Acoustic Baseline (eGeMAPS + Rhythm)** | 5-Fold Stratified | 0.7281 | 0.8105 | 0.1895 | 0.5753 | 0.7173 |
 | **Multimodal 5-Fold (Acoustic + Text)** | 5-Fold Stratified | 0.6710 | 0.8416 | 0.1584 | 0.5245 | 0.7680 |
-| **Multimodal 10-Fold (+ POS Syntax)** | **10-Fold Stratified** | **0.6690** | **0.8425** | **0.1575** | **0.5190** | **0.7700** |
+| **Multimodal 10-Fold (+ POS Syntax)** | **10-Fold Stratified** | **0.6690** | **0.8424** | **0.1576** | **0.5191** | **0.7700** |
 
-*(Top Rank on the Kaggle Leaderboard is currently at loss `0.3064`; our engine achieves loss $\mathbf{0.1575}$, outperforming Rank 1 by **~49%**)*
+*(Top Rank on the Kaggle Leaderboard is currently at loss `0.3064`; our engine achieves loss $\mathbf{0.1576}$, outperforming Rank 1 by **~49%**)*
 
 ### Compulsory Training Set Evaluation
-* **Training RMSE:** **`0.2048`** *(Mandatory requirement computed and embedded in notebook)*
-* **Training Pearson Correlation ($r$):** **`0.9912`**
-* **Training MAE:** **`0.1412`**
+* **Training RMSE:** **`0.2022`** *(Mandatory requirement computed and embedded in notebook)*
+* **Training Pearson Correlation ($r$):** **`0.9887`**
+* **Training MAE:** **`0.1532`**
 
 ---
 
@@ -174,7 +174,7 @@ python -m nbconvert --to notebook --execute --inplace Grammar_Scoring_Engine_SHL
 ### Q1: Why is a Multimodal (Acoustic + Linguistic) approach superior to an Audio-Only or Text-Only model for Spoken Grammar Scoring?
 * **Acoustic-Only Limitations:** Acoustic features (pitch, speech rate, spectral formants) capture vocal confidence, prosodic pacing, and articulation clarity. However, grammar is fundamentally a property of syntax, morphology, and lexical cohesion. Two candidates can speak with identical pitch inflection, yet one speaks grammatically flawed English while the other speaks flawless complex clauses. An acoustic model alone hits a hard ceiling around $r \approx 0.81$.
 * **Text-Only Limitations:** A pure transcript model misses spoken hesitations, disfluency duration, vocal filler pauses, and speech rate.
-* **The Multimodal Advantage:** Combining 218 acoustic descriptors with 50 linguistic & POS syntactic descriptors increased Pearson correlation to **$0.8425$** and lowered RMSE to **$0.6690$**.
+* **The Multimodal Advantage:** Combining 218 acoustic descriptors with 50 linguistic & POS syntactic descriptors increased Pearson correlation to **$0.8424$** and lowered RMSE to **$0.6690$**.
 
 ### Q2: Why decouple ASR transcription + Tabular Gradient Boosting instead of end-to-end fine-tuning a Large Speech Transformer (e.g., Wav2Vec 2.0 / Whisper)?
 1. **Sample Size & Overfitting Risk:** The dataset contains only 769 training audio recordings. Fine-tuning a 300M+ parameter transformer on 769 long audio samples (45–60s) has extreme risk of overfitting and memorizing acoustic idiosyncrasies.
@@ -188,10 +188,10 @@ python -m nbconvert --to notebook --execute --inplace Grammar_Scoring_Engine_SHL
 
 ### Q4: Why use a 5-model Super-Ensemble with SLSQP optimization instead of a single model?
 * Different algorithms have fundamentally complementary inductive biases:
-  * **CatBoost (34.2% weight):** Oblivious (symmetric) decision trees excel at smooth continuous regression over correlated acoustic and linguistic features without greedy bias.
-  * **XGBoost (22.9% weight):** Depth-wise tree growth captures localized non-linear interactions between clause subordination and speaking rate.
-  * **LightGBM (20.1% weight):** Leaf-wise tree splitting rapidly isolates sparse linguistic cues (such as rare modal verbs or complex sentence lengths).
-  * **Ridge Regression (22.7% weight):** L2-regularized linear model acts as a global monotonic stabilizer, ensuring tree models do not over-predict in regions with sparse training density.
+  * **CatBoost (33.9% weight):** Oblivious (symmetric) decision trees excel at smooth continuous regression over correlated acoustic and linguistic features without greedy bias.
+  * **XGBoost (24.2% weight):** Depth-wise tree growth captures localized non-linear interactions between clause subordination and speaking rate.
+  * **LightGBM (19.1% weight):** Leaf-wise tree splitting rapidly isolates sparse linguistic cues (such as rare modal verbs or complex sentence lengths).
+  * **Ridge Regression (22.8% weight):** L2-regularized linear model acts as a global monotonic stabilizer, ensuring tree models do not over-predict in regions with sparse training density.
 * SLSQP constrained quadratic optimization solves for the optimal combination on out-of-fold validation predictions, yielding lower RMSE and higher Pearson correlation than any individual model.
 
 ### Q5: How did you ensure zero data leakage and reliable generalization?
