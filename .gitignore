@@ -1,0 +1,11 @@
+# Audio raw files (keep dataset folders but ignore heavy audio)
+Dataset_Final/train/*.wav
+Dataset_Final/test/*.wav
+*.wav
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+*.log
