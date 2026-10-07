@@ -28,6 +28,10 @@ The system is evaluated on the private Kaggle leaderboard using **Pearson Correl
 
 ## 2. End-to-End Pipeline Architecture
 
+<p align="center">
+  <img src="pipeline_architecture.gif" alt="Multimodal Grammar Scoring Pipeline Architecture" width="100%" />
+</p>
+
 ```mermaid
 flowchart TD
     A["Raw Audio (.wav)<br>16 kHz Mono"] --> B["Dual-Branch Feature Extraction"]
