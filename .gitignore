@@ -12,3 +12,6 @@ __pycache__/
 
 # CatBoost info
 catboost_info/
+
+# Scratch directory
+scratch/

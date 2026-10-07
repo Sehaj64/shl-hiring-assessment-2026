@@ -49,18 +49,19 @@ While acoustic features (intonation, formants, speech rate) capture vocal delive
    * **Fluency & Temporal Rhythm:** Syllabic onset rate (speaking tempo), inter-onset interval (IOI) variation (rhythm regularity), onset envelope dynamics.
    * **Voice Activity & Energy Dynamics:** Active speech frame ratio, silence thresholding, energy range ($p90 - p10$), RMS energy standard deviation.
    * **Spectral & Timbral Descriptors:** 20 MFCCs, Delta-MFCCs, 7 Spectral Contrast bands, 12 Chroma features, Spectral Bandwidth, and Rolloff (85% and 95%).
-2. **Branch B — ASR & Linguistic Grammar Engine (36 Descriptors):**
+2. **Branch B — ASR & Linguistic Grammar Engine with POS Tagging (50 Descriptors):**
    * **ASR Transcription:** Speech transcribed verbatim using `faster-whisper` (int8 quantized).
+   * **Part-Of-Speech (POS) Syntactic Tagging:** NLTK Penn Treebank POS tag distributions (noun ratio, verb ratio, adjective ratio, adverb ratio, pronoun ratio, preposition ratio, determiner ratio, WH-pronoun ratio, past-tense ratio, gerund ratio, clause subordination ratio, pronoun-to-noun ratio, distinct tag ratio, POS bigram diversity).
    * **Syntactic Complexity & Readability:** Flesch-Kincaid Grade Level, Gunning Fog index, Dale-Chall score, sentence count, mean and variance of sentence length.
    * **Grammatical Diversity:** Type-Token Ratio (TTR), Guiraud's Index of Lexical Richness, hapax legomena ratio, long-word ratio ($\ge 6$ chars).
    * **Syntactic Conjunctions & Disfluency:** Modal verb frequency, subordinating conjunction frequency (measuring complex clause embedding), coordinating conjunctions; immediate word repetition (stuttering).
    * **Latent Semantic & Morphological Structure:** TF-IDF word & character n-grams with TruncatedSVD dimensionality reduction.
-3. **Stratified 5-Fold Cross-Validation:** Stratification across discrete score bands to prevent label leakage.
+3. **Stratified 10-Fold Cross-Validation:** Stratification across discrete score bands to prevent label leakage and ensure minimal variance.
 4. **SLSQP-Optimized Multi-Model Super-Ensemble:**
-   * **CatBoost Regressor** (60.0%)
-   * **Ridge Regressor + RobustScaler** (18.6%)
-   * **LightGBM Regressor** (13.9%)
-   * **XGBoost Regressor** (7.5%)
+   * **CatBoost Regressor** (34.2%)
+   * **XGBoost Regressor** (22.9%)
+   * **Ridge Regressor + RobustScaler** (22.7%)
+   * **LightGBM Regressor** (20.1%)
    * **ExtraTrees Regressor** (0.0%)
 5. **Deterministic Noise Override:** Flagging blank/noise recordings (`Spectral Flatness > 0.40` and `Centroid > 3500 Hz`) to clamp to `0.0`.
 """))
@@ -87,6 +88,7 @@ import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostRegressor
 import textstat
+from nltk import pos_tag, word_tokenize
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -94,7 +96,7 @@ plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.
 plt.rcParams['font.sans-serif'] = 'DejaVu Sans'
 plt.rcParams['font.size'] = 11
 
-print("Environment successfully initialized with CatBoost, LightGBM, XGBoost, and Scikit-Learn.")
+print("Environment successfully initialized with CatBoost, LightGBM, XGBoost, Scikit-Learn, and NLTK.")
 """))
 
 # Cell 2: Data Loading & Multimodal Feature Fusion
@@ -112,83 +114,144 @@ print(f"Loaded {len(train_merged)} training samples and {len(test_merged)} test 
 display(train_merged[['filename', 'label', 'transcript']].head())
 """))
 
-# Cell 3: Linguistic Feature Extraction
-cells.append(nbf.v4.new_code_cell("""def extract_linguistic_features_single(text, duration):
+# Cell 3: Linguistic & POS Feature Extraction
+cells.append(nbf.v4.new_code_cell("""def extract_pos_and_linguistic_features(text, duration):
     text = str(text) if pd.notna(text) else ""
     words = re.findall(r'\\b[a-zA-Z]+\\b', text.lower())
     n_words = len(words)
     dur_min = duration / 60.0 if duration > 0 else 1.0
     wpm = n_words / dur_min
     
+    base_res = {
+        'ling_word_count': n_words,
+        'ling_char_count': len(text),
+        'ling_wpm': wpm,
+        'ling_avg_word_length': 0.0,
+        'ling_ttr': 0.0,
+        'ling_guiraud': 0.0,
+        'ling_hapax_ratio': 0.0,
+        'ling_long_word_ratio': 0.0,
+        'ling_sent_count': 0,
+        'ling_avg_sent_len': 0.0,
+        'ling_std_sent_len': 0.0,
+        'ling_max_sent_len': 0.0,
+        'ling_modal_ratio': 0.0,
+        'ling_sub_conj': 0.0,
+        'ling_coord_conj': 0.0,
+        'ling_repetition_count': 0,
+        'ling_fk_grade': 0.0,
+        'ling_fog': 0.0,
+        'ling_dale_chall': 0.0,
+        'ling_reading_ease': 0.0,
+        'ling_coleman': 0.0,
+        'ling_ari': 0.0,
+        # POS Syntactic Features
+        'pos_noun_ratio': 0.0,
+        'pos_verb_ratio': 0.0,
+        'pos_adj_ratio': 0.0,
+        'pos_adv_ratio': 0.0,
+        'pos_pronoun_ratio': 0.0,
+        'pos_prep_ratio': 0.0,
+        'pos_det_ratio': 0.0,
+        'pos_wh_ratio': 0.0,
+        'pos_past_tense_ratio': 0.0,
+        'pos_gerund_ratio': 0.0,
+        'pos_clause_sub_ratio': 0.0,
+        'pos_pronoun_to_noun': 0.0,
+        'pos_distinct_tag_ratio': 0.0,
+        'pos_bigram_diversity': 0.0
+    }
+    
     if n_words == 0:
-        return {
-            'ling_word_count': 0, 'ling_char_count': 0, 'ling_avg_word_length': 0.0,
-            'ling_ttr': 0.0, 'ling_guiraud': 0.0, 'ling_hapax_ratio': 0.0, 'ling_long_word_ratio': 0.0,
-            'ling_wpm': 0.0, 'ling_sent_count': 0, 'ling_avg_sent_len': 0.0,
-            'ling_std_sent_len': 0.0, 'ling_max_sent_len': 0.0,
-            'ling_modal_ratio': 0.0, 'ling_sub_conj': 0.0, 'ling_coord_conj': 0.0, 'ling_repetition_count': 0,
-            'ling_fk_grade': 0.0, 'ling_fog': 0.0, 'ling_dale_chall': 0.0,
-            'ling_reading_ease': 0.0, 'ling_coleman': 0.0, 'ling_ari': 0.0
-        }
+        return base_res
         
     unique_words = set(words)
     n_unique = len(unique_words)
-    ttr = n_unique / n_words
-    guiraud = n_unique / np.sqrt(n_words)
+    base_res['ling_ttr'] = n_unique / n_words
+    base_res['ling_guiraud'] = n_unique / np.sqrt(n_words)
     
     word_freq = {}
     for w in words: word_freq[w] = word_freq.get(w, 0) + 1
     hapax_count = sum(1 for w, c in word_freq.items() if c == 1)
-    hapax_ratio = hapax_count / n_words
+    base_res['ling_hapax_ratio'] = hapax_count / n_words
     
     word_lens = [len(w) for w in words]
-    avg_wlen = float(np.mean(word_lens))
+    base_res['ling_avg_word_length'] = float(np.mean(word_lens))
     long_words = sum(1 for l in word_lens if l >= 6)
-    long_word_ratio = long_words / n_words
+    base_res['ling_long_word_ratio'] = long_words / n_words
     
     sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
     sent_count = max(len(sentences), 1)
+    base_res['ling_sent_count'] = sent_count
     sent_lens = [len(re.findall(r'\\b[a-zA-Z]+\\b', s)) for s in sentences]
-    avg_sent_len = float(np.mean(sent_lens)) if len(sent_lens) > 0 else float(n_words)
-    std_sent_len = float(np.std(sent_lens)) if len(sent_lens) > 0 else 0.0
-    max_sent_len = float(np.max(sent_lens)) if len(sent_lens) > 0 else float(n_words)
+    base_res['ling_avg_sent_len'] = float(np.mean(sent_lens)) if len(sent_lens) > 0 else float(n_words)
+    base_res['ling_std_sent_len'] = float(np.std(sent_lens)) if len(sent_lens) > 0 else 0.0
+    base_res['ling_max_sent_len'] = float(np.max(sent_lens)) if len(sent_lens) > 0 else float(n_words)
     
     modals = {'can', 'could', 'would', 'should', 'might', 'must', 'may', 'shall', 'ought'}
     sub_conjs = {'because', 'although', 'since', 'while', 'whereas', 'unless', 'though', 'if', 'even', 'whether', 'as'}
     coord_conjs = {'and', 'but', 'so', 'or', 'yet', 'for', 'nor'}
     
-    modal_count = sum(1 for w in words if w in modals) / n_words
-    sub_count = sum(1 for w in words if w in sub_conjs) / n_words
-    coord_count = sum(1 for w in words if w in coord_conjs) / n_words
+    base_res['ling_modal_ratio'] = sum(1 for w in words if w in modals) / n_words
+    base_res['ling_sub_conj'] = sum(1 for w in words if w in sub_conjs) / n_words
+    base_res['ling_coord_conj'] = sum(1 for w in words if w in coord_conjs) / n_words
     
-    reps = sum(1 for i in range(n_words - 1) if words[i] == words[i+1])
+    reps = sum(1 for i in range(len(words) - 1) if words[i] == words[i+1])
+    base_res['ling_repetition_count'] = reps
+    
+    try: base_res['ling_fk_grade'] = float(textstat.flesch_kincaid_grade(text))
+    except: pass
+    try: base_res['ling_fog'] = float(textstat.gunning_fog(text))
+    except: pass
+    try: base_res['ling_dale_chall'] = float(textstat.dale_chall_readability_score(text))
+    except: pass
+    try: base_res['ling_reading_ease'] = float(textstat.flesch_reading_ease(text))
+    except: pass
+    try: base_res['ling_coleman'] = float(textstat.coleman_liau_index(text))
+    except: pass
+    try: base_res['ling_ari'] = float(textstat.automated_readability_index(text))
+    except: pass
+    
+    # POS Tagging Features
+    tokens = word_tokenize(text)
+    pos_tags = [tag for word, tag in pos_tag(tokens) if word.isalnum()]
+    n_pos = len(pos_tags)
+    
+    if n_pos > 0:
+        nouns = sum(1 for t in pos_tags if t.startswith('NN'))
+        verbs = sum(1 for t in pos_tags if t.startswith('VB'))
+        adjs = sum(1 for t in pos_tags if t.startswith('JJ'))
+        advs = sum(1 for t in pos_tags if t.startswith('RB'))
+        pronouns = sum(1 for t in pos_tags if t.startswith('PRP'))
+        preps = sum(1 for t in pos_tags if t == 'IN')
+        dets = sum(1 for t in pos_tags if t == 'DT')
+        whs = sum(1 for t in pos_tags if t.startswith('W'))
+        past_tense = sum(1 for t in pos_tags if t in ('VBD', 'VBN'))
+        gerunds = sum(1 for t in pos_tags if t == 'VBG')
+        
+        base_res['pos_noun_ratio'] = nouns / n_pos
+        base_res['pos_verb_ratio'] = verbs / n_pos
+        base_res['pos_adj_ratio'] = adjs / n_pos
+        base_res['pos_adv_ratio'] = advs / n_pos
+        base_res['pos_pronoun_ratio'] = pronouns / n_pos
+        base_res['pos_prep_ratio'] = preps / n_pos
+        base_res['pos_det_ratio'] = dets / n_pos
+        base_res['pos_wh_ratio'] = whs / n_pos
+        base_res['pos_past_tense_ratio'] = past_tense / n_pos
+        base_res['pos_gerund_ratio'] = gerunds / n_pos
+        base_res['pos_clause_sub_ratio'] = base_res['ling_sub_conj'] / (base_res['ling_coord_conj'] + base_res['ling_sub_conj'] + 1e-4)
+        base_res['pos_pronoun_to_noun'] = pronouns / (nouns + 1e-4)
+        base_res['pos_distinct_tag_ratio'] = len(set(pos_tags)) / 36.0
+        
+        pos_bigrams = [f"{pos_tags[i]}_{pos_tags[i+1]}" for i in range(len(pos_tags)-1)]
+        if len(pos_bigrams) > 0:
+            base_res['pos_bigram_diversity'] = len(set(pos_bigrams)) / len(pos_bigrams)
             
-    try: fk_grade = float(textstat.flesch_kincaid_grade(text))
-    except: fk_grade = 0.0
-    try: fog = float(textstat.gunning_fog(text))
-    except: fog = 0.0
-    try: dc = float(textstat.dale_chall_readability_score(text))
-    except: dc = 0.0
-    try: ease = float(textstat.flesch_reading_ease(text))
-    except: ease = 0.0
-    try: coleman = float(textstat.coleman_liau_index(text))
-    except: coleman = 0.0
-    try: ari = float(textstat.automated_readability_index(text))
-    except: ari = 0.0
+    return base_res
 
-    return {
-        'ling_word_count': n_words, 'ling_char_count': len(text), 'ling_avg_word_length': avg_wlen,
-        'ling_ttr': ttr, 'ling_guiraud': guiraud, 'ling_hapax_ratio': hapax_ratio, 'ling_long_word_ratio': long_word_ratio,
-        'ling_wpm': wpm, 'ling_sent_count': sent_count, 'ling_avg_sent_len': avg_sent_len,
-        'ling_std_sent_len': std_sent_len, 'ling_max_sent_len': max_sent_len, 'ling_modal_ratio': modal_count,
-        'ling_sub_conj': sub_count, 'ling_coord_conj': coord_count, 'ling_repetition_count': reps,
-        'ling_fk_grade': fk_grade, 'ling_fog': fog, 'ling_dale_chall': dc,
-        'ling_reading_ease': ease, 'ling_coleman': coleman, 'ling_ari': ari
-    }
-
-print("Extracting linguistic & syntactic complexity features...")
-train_ling = pd.DataFrame([extract_linguistic_features_single(r['transcript'], r['duration']) for _, r in train_merged.iterrows()])
-test_ling = pd.DataFrame([extract_linguistic_features_single(r['transcript'], r['duration']) for _, r in test_merged.iterrows()])
+print("Extracting linguistic, syntactic complexity & POS tagging features...")
+train_ling = pd.DataFrame([extract_pos_and_linguistic_features(r['transcript'], r['duration']) for _, r in train_merged.iterrows()])
+test_ling = pd.DataFrame([extract_pos_and_linguistic_features(r['transcript'], r['duration']) for _, r in test_merged.iterrows()])
 
 # TF-IDF + SVD for syntactic & semantic structure
 all_texts = train_merged['transcript'].fillna('').tolist() + test_merged['transcript'].fillna('').tolist()
@@ -209,7 +272,7 @@ X = pd.concat([train_ac[ac_cols], train_ling, train_svd], axis=1)
 y = train_ac['label'].values
 X_test = pd.concat([test_ac[ac_cols], test_ling, test_svd], axis=1)
 
-print(f"Fused Multimodal Matrix: {X.shape[1]} features (218 acoustic + 36 linguistic/semantic)!")
+print(f"Fused Multimodal Matrix: {X.shape[1]} features (218 acoustic + 36 linguistic/POS + 16 SVD)!")
 """))
 
 # Cell 4: Target & Feature Analysis Visualizations
@@ -222,8 +285,8 @@ axes[0].set_xlabel("Grammar Score (MOS Likert 0.0 to 5.0)")
 axes[0].set_ylabel("Candidate Count")
 
 # Linguistic vs Score Scatter
-sns.scatterplot(x=train_ling['ling_avg_word_length'], y=y, hue=train_ling['ling_guiraud'], palette='viridis', ax=axes[1], alpha=0.8)
-axes[1].set_title("Vocabulary Sophistication (Word Length & Guiraud Index) vs Grammar Score", fontsize=13, fontweight='bold')
+sns.scatterplot(x=train_ling['ling_avg_word_length'], y=y, hue=train_ling['pos_clause_sub_ratio'], palette='viridis', ax=axes[1], alpha=0.8)
+axes[1].set_title("Syntactic Complexity (Word Length & Clause Subordination) vs Grammar Score", fontsize=13, fontweight='bold')
 axes[1].set_xlabel("Average Spoken Word Length (Characters)")
 axes[1].set_ylabel("Grammar Score")
 
@@ -231,7 +294,7 @@ plt.tight_layout()
 plt.show()
 """))
 
-# Cell 5: Stratified 5-Fold Cross-Validation
+# Cell 5: Stratified 10-Fold Cross-Validation
 cells.append(nbf.v4.new_code_cell("""medians = X.median()
 X = X.fillna(medians).replace([np.inf, -np.inf], 0)
 X_test = X_test.fillna(medians).replace([np.inf, -np.inf], 0)
@@ -241,7 +304,7 @@ strat_labels[strat_labels == 1.0] = 2.0
 strat_labels[strat_labels == 1.5] = 2.0
 strat_labels_cat = (strat_labels * 2).astype(int)
 
-n_splits = 5
+n_splits = 10
 skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
 
 models = {
@@ -252,7 +315,7 @@ models = {
     'Ridge':    {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))}
 }
 
-print(f"Beginning 5-Fold Stratified Cross-Validation on {X.shape[1]} multimodal features...")
+print(f"Beginning {n_splits}-Fold Stratified Cross-Validation on {X.shape[1]} multimodal features...")
 
 for fold, (train_idx, val_idx) in enumerate(skf.split(X, strat_labels_cat)):
     X_tr, y_tr = X.iloc[train_idx], y[train_idx]
@@ -294,7 +357,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, strat_labels_cat)):
     models['Ridge']['oof'][val_idx] = ridge_pipe.predict(X_va)
     models['Ridge']['test'] += ridge_pipe.predict(X_test) / n_splits
 
-print("All 5 folds completed successfully for all model families!")
+print(f"All {n_splits} folds completed successfully for all model families!")
 """))
 
 # Cell 6: Optimal Ensembling & Validation Evaluation
@@ -307,7 +370,7 @@ def blend_loss(weights):
     pred = np.clip(oof_matrix @ w, 0.0, 5.0)
     return np.sqrt(mean_squared_error(y, pred))
 
-res = minimize(blend_loss, [0.50, 0.20, 0.10, 0.10, 0.10], method='SLSQP', bounds=[(0, 1)]*5, constraints={'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+res = minimize(blend_loss, [0.40, 0.20, 0.20, 0.05, 0.15], method='SLSQP', bounds=[(0, 1)]*5, constraints={'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
 weights = res.x
 weight_dict = dict(zip(m_keys, np.round(weights, 3)))
 print(f"Optimal Super-Ensemble Weights: {weight_dict}")
@@ -405,7 +468,7 @@ imp_df = pd.DataFrame({
 
 plt.figure(figsize=(12, 7))
 sns.barplot(data=imp_df.head(20), x='Importance', y='Feature', palette='mako')
-plt.title("Top 20 Most Predictive Multimodal Features (Acoustic + Linguistic)", fontsize=13, fontweight='bold')
+plt.title("Top 20 Most Predictive Multimodal Features (Acoustic + Linguistic + POS)", fontsize=13, fontweight='bold')
 plt.xlabel("Ensemble Normalized Feature Importance")
 plt.ylabel("Feature Name")
 plt.tight_layout()
@@ -451,16 +514,18 @@ plt.show()
 cells.append(nbf.v4.new_code_cell("""summary_table = pd.DataFrame({
     'Model Approach': [
         'Acoustic-Only Baseline (eGeMAPS + Rhythm)',
-        'Multimodal Super-Ensemble (CatBoost + XGB + LGBM + Ridge + ET)'
+        'Multimodal 5-Fold Ensemble',
+        'Multimodal 10-Fold Super-Ensemble + POS Syntax'
     ],
-    'Validation RMSE': ['0.7281', f'{val_rmse:.4f}'],
-    'Validation Pearson r (Leaderboard Metric)': ['0.8105', f'{val_pearson:.4f}'],
-    'Validation Leaderboard Loss (1 - r)': ['0.1895', f'{1 - val_pearson:.4f}'],
-    'Validation MAE': ['0.5753', f'{val_mae:.4f}'],
-    'Validation Spearman rho': ['0.7173', f'{val_spearman:.4f}'],
-    'Training RMSE (Compulsory)': ['0.1690', f'{train_rmse:.4f}'],
+    'Validation RMSE': ['0.7281', '0.6710', f'{val_rmse:.4f}'],
+    'Validation Pearson r (Leaderboard Metric)': ['0.8105', '0.8416', f'{val_pearson:.4f}'],
+    'Validation Leaderboard Loss (1 - r)': ['0.1895', '0.1584', f'{1 - val_pearson:.4f}'],
+    'Validation MAE': ['0.5753', '0.5245', f'{val_mae:.4f}'],
+    'Validation Spearman rho': ['0.7173', '0.7680', f'{val_spearman:.4f}'],
+    'Training RMSE (Compulsory)': ['0.1690', '0.2048', f'{train_rmse:.4f}'],
     'Ensemble Weights': [
         'LGBM (18%) + XGB (55%) + ET (17%) + Ridge (10%)',
+        'CatBoost (60%) + Ridge (18.6%) + LGBM (13.9%) + XGB (7.5%)',
         f'CatBoost ({weights[0]*100:.1f}%) + XGB ({weights[1]*100:.1f}%) + LGBM ({weights[2]*100:.1f}%) + ET ({weights[3]*100:.1f}%) + Ridge ({weights[4]*100:.1f}%)'
     ]
 })
