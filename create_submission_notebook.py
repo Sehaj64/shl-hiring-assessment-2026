@@ -33,8 +33,8 @@ cells.append(nbf.v4.new_markdown_cell("""# SHL Hiring Assessment 2026: Multimoda
 
 ## Executive Summary & Engineering Report
 
-### 1. Problem Definition
-The objective of this challenge is to develop an automated **Grammar Scoring Engine** for 45–60 second candidate interview recordings. Given an audio recording in `.wav` format (16 kHz, single channel), the engine predicts a continuous grammar proficiency score ranging from **0.0 to 5.0** aligning with the Mean Opinion Score (MOS) Likert rubric:
+### 1. Problem Formulation & Objective
+The challenge requires engineering an automated **Grammar Scoring Engine** for 45–60 second candidate interview speech recordings. Given an audio recording in `.wav` format (16 kHz, single channel), the engine predicts a continuous grammar proficiency score ranging from **0.0 to 5.0** according to the Mean Opinion Score (MOS) Likert rubric:
 * **0.0 — No Response / Void:** Silence, unintelligible audio, or microphone static.
 * **1.0 — Elementary:** Struggles with basic sentence structure and syntax; limited control over memorized patterns.
 * **2.0 — Basic:** Limited syntactic grasp; consistent structural and grammatical errors; fragmented sentences.
@@ -42,25 +42,26 @@ The objective of this challenge is to develop an automated **Grammar Scoring Eng
 * **4.0 — Advanced:** Strong command over sentence structure and syntax; minor, self-corrected slips that do not impede comprehension.
 * **5.0 — Expert / Native-like:** High grammatical accuracy, adept control over complex grammar, natural articulation, and effortless expression.
 
-### 2. Multimodal Fusion Architecture
+### 2. Dual-Branch Multimodal Architecture
 While acoustic features (intonation, formants, speech rate) capture vocal delivery and fluency, **grammar is fundamentally linguistic and syntactic**. Therefore, we designed a **dual-branch multimodal fusion pipeline**:
 1. **Branch A — Acoustic & Prosodic Engine (218 Descriptors):**
    * **openSMILE eGeMAPSv02 Functionals (88 features):** Standardized clinical & paralinguistic voice parameters (Pitch $F_0$ percentiles, slopes, ranges; Formants F1–F3 frequencies/bandwidths; Jitter; Shimmer; Harmonics-to-Noise Ratio (HNR); Alpha Ratio; Hammarberg Index; Loudness).
    * **Fluency & Temporal Rhythm:** Syllabic onset rate (speaking tempo), inter-onset interval (IOI) variation (rhythm regularity), onset envelope dynamics.
    * **Voice Activity & Energy Dynamics:** Active speech frame ratio, silence thresholding, energy range ($p90 - p10$), RMS energy standard deviation.
    * **Spectral & Timbral Descriptors:** 20 MFCCs, Delta-MFCCs, 7 Spectral Contrast bands, 12 Chroma features, Spectral Bandwidth, and Rolloff (85% and 95%).
-2. **Branch B — ASR & Linguistic Grammar Engine (34 Descriptors):**
-   * **ASR Transcription:** Speech transcribed using `faster-whisper` (int8 quantized).
+2. **Branch B — ASR & Linguistic Grammar Engine (36 Descriptors):**
+   * **ASR Transcription:** Speech transcribed verbatim using `faster-whisper` (int8 quantized).
    * **Syntactic Complexity & Readability:** Flesch-Kincaid Grade Level, Gunning Fog index, Dale-Chall score, sentence count, mean and variance of sentence length.
-   * **Grammatical Diversity:** Type-Token Ratio (TTR), lexical richness, hapax legomena ratio, long word ratio.
-   * **Syntactic Conjunctions & Disfluency:** Subordinating conjunction frequency (complex clauses) vs coordinating conjunctions; immediate word repetition (stuttering).
+   * **Grammatical Diversity:** Type-Token Ratio (TTR), Guiraud's Index of Lexical Richness, hapax legomena ratio, long-word ratio ($\ge 6$ chars).
+   * **Syntactic Conjunctions & Disfluency:** Modal verb frequency, subordinating conjunction frequency (measuring complex clause embedding), coordinating conjunctions; immediate word repetition (stuttering).
    * **Latent Semantic & Morphological Structure:** TF-IDF word & character n-grams with TruncatedSVD dimensionality reduction.
 3. **Stratified 5-Fold Cross-Validation:** Stratification across discrete score bands to prevent label leakage.
-4. **SLSQP-Optimized Multi-Model Ensemble:**
-   * **LightGBM Regressor** (9.9%)
-   * **XGBoost Regressor** (59.7%)
-   * **ExtraTrees Regressor** (5.0%)
-   * **Ridge Regressor + RobustScaler** (25.4%)
+4. **SLSQP-Optimized Multi-Model Super-Ensemble:**
+   * **CatBoost Regressor** (60.0%)
+   * **Ridge Regressor + RobustScaler** (18.6%)
+   * **LightGBM Regressor** (13.9%)
+   * **XGBoost Regressor** (7.5%)
+   * **ExtraTrees Regressor** (0.0%)
 5. **Deterministic Noise Override:** Flagging blank/noise recordings (`Spectral Flatness > 0.40` and `Centroid > 3500 Hz`) to clamp to `0.0`.
 """))
 
@@ -84,6 +85,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 import lightgbm as lgb
 import xgboost as xgb
+from catboost import CatBoostRegressor
 import textstat
 import warnings
 warnings.filterwarnings('ignore')
@@ -92,7 +94,7 @@ plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.
 plt.rcParams['font.sans-serif'] = 'DejaVu Sans'
 plt.rcParams['font.size'] = 11
 
-print("Environment successfully initialized with LightGBM, XGBoost, and Scikit-Learn.")
+print("Environment successfully initialized with CatBoost, LightGBM, XGBoost, and Scikit-Learn.")
 """))
 
 # Cell 2: Data Loading & Multimodal Feature Fusion
@@ -111,7 +113,7 @@ display(train_merged[['filename', 'label', 'transcript']].head())
 """))
 
 # Cell 3: Linguistic Feature Extraction
-cells.append(nbf.v4.new_code_cell("""def extract_linguistic_features(text, duration):
+cells.append(nbf.v4.new_code_cell("""def extract_linguistic_features_single(text, duration):
     text = str(text) if pd.notna(text) else ""
     words = re.findall(r'\\b[a-zA-Z]+\\b', text.lower())
     n_words = len(words)
@@ -121,35 +123,46 @@ cells.append(nbf.v4.new_code_cell("""def extract_linguistic_features(text, durat
     if n_words == 0:
         return {
             'ling_word_count': 0, 'ling_char_count': 0, 'ling_avg_word_length': 0.0,
-            'ling_ttr': 0.0, 'ling_hapax_ratio': 0.0, 'ling_long_word_ratio': 0.0,
+            'ling_ttr': 0.0, 'ling_guiraud': 0.0, 'ling_hapax_ratio': 0.0, 'ling_long_word_ratio': 0.0,
             'ling_wpm': 0.0, 'ling_sent_count': 0, 'ling_avg_sent_len': 0.0,
-            'ling_std_sent_len': 0.0, 'ling_sub_conj': 0, 'ling_coord_conj': 0,
+            'ling_std_sent_len': 0.0, 'ling_max_sent_len': 0.0,
+            'ling_modal_ratio': 0.0, 'ling_sub_conj': 0.0, 'ling_coord_conj': 0.0, 'ling_repetition_count': 0,
             'ling_fk_grade': 0.0, 'ling_fog': 0.0, 'ling_dale_chall': 0.0,
             'ling_reading_ease': 0.0, 'ling_coleman': 0.0, 'ling_ari': 0.0
         }
         
     unique_words = set(words)
-    ttr = len(unique_words) / n_words
+    n_unique = len(unique_words)
+    ttr = n_unique / n_words
+    guiraud = n_unique / np.sqrt(n_words)
     
     word_freq = {}
     for w in words: word_freq[w] = word_freq.get(w, 0) + 1
-    hapax_ratio = sum(1 for w, c in word_freq.items() if c == 1) / n_words
+    hapax_count = sum(1 for w, c in word_freq.items() if c == 1)
+    hapax_ratio = hapax_count / n_words
     
     word_lens = [len(w) for w in words]
     avg_wlen = float(np.mean(word_lens))
-    long_word_ratio = sum(1 for l in word_lens if l >= 6) / n_words
+    long_words = sum(1 for l in word_lens if l >= 6)
+    long_word_ratio = long_words / n_words
     
     sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
     sent_count = max(len(sentences), 1)
     sent_lens = [len(re.findall(r'\\b[a-zA-Z]+\\b', s)) for s in sentences]
     avg_sent_len = float(np.mean(sent_lens)) if len(sent_lens) > 0 else float(n_words)
     std_sent_len = float(np.std(sent_lens)) if len(sent_lens) > 0 else 0.0
+    max_sent_len = float(np.max(sent_lens)) if len(sent_lens) > 0 else float(n_words)
     
+    modals = {'can', 'could', 'would', 'should', 'might', 'must', 'may', 'shall', 'ought'}
     sub_conjs = {'because', 'although', 'since', 'while', 'whereas', 'unless', 'though', 'if', 'even', 'whether', 'as'}
     coord_conjs = {'and', 'but', 'so', 'or', 'yet', 'for', 'nor'}
-    sub_count = sum(1 for w in words if w in sub_conjs)
-    coord_count = sum(1 for w in words if w in coord_conjs)
     
+    modal_count = sum(1 for w in words if w in modals) / n_words
+    sub_count = sum(1 for w in words if w in sub_conjs) / n_words
+    coord_count = sum(1 for w in words if w in coord_conjs) / n_words
+    
+    reps = sum(1 for i in range(n_words - 1) if words[i] == words[i+1])
+            
     try: fk_grade = float(textstat.flesch_kincaid_grade(text))
     except: fk_grade = 0.0
     try: fog = float(textstat.gunning_fog(text))
@@ -165,16 +178,17 @@ cells.append(nbf.v4.new_code_cell("""def extract_linguistic_features(text, durat
 
     return {
         'ling_word_count': n_words, 'ling_char_count': len(text), 'ling_avg_word_length': avg_wlen,
-        'ling_ttr': ttr, 'ling_hapax_ratio': hapax_ratio, 'ling_long_word_ratio': long_word_ratio,
+        'ling_ttr': ttr, 'ling_guiraud': guiraud, 'ling_hapax_ratio': hapax_ratio, 'ling_long_word_ratio': long_word_ratio,
         'ling_wpm': wpm, 'ling_sent_count': sent_count, 'ling_avg_sent_len': avg_sent_len,
-        'ling_std_sent_len': std_sent_len, 'ling_sub_conj': sub_count, 'ling_coord_conj': coord_count,
+        'ling_std_sent_len': std_sent_len, 'ling_max_sent_len': max_sent_len, 'ling_modal_ratio': modal_count,
+        'ling_sub_conj': sub_count, 'ling_coord_conj': coord_count, 'ling_repetition_count': reps,
         'ling_fk_grade': fk_grade, 'ling_fog': fog, 'ling_dale_chall': dc,
         'ling_reading_ease': ease, 'ling_coleman': coleman, 'ling_ari': ari
     }
 
 print("Extracting linguistic & syntactic complexity features...")
-train_ling = pd.DataFrame([extract_linguistic_features(r['transcript'], r['duration']) for _, r in train_merged.iterrows()])
-test_ling = pd.DataFrame([extract_linguistic_features(r['transcript'], r['duration']) for _, r in test_merged.iterrows()])
+train_ling = pd.DataFrame([extract_linguistic_features_single(r['transcript'], r['duration']) for _, r in train_merged.iterrows()])
+test_ling = pd.DataFrame([extract_linguistic_features_single(r['transcript'], r['duration']) for _, r in test_merged.iterrows()])
 
 # TF-IDF + SVD for syntactic & semantic structure
 all_texts = train_merged['transcript'].fillna('').tolist() + test_merged['transcript'].fillna('').tolist()
@@ -195,7 +209,7 @@ X = pd.concat([train_ac[ac_cols], train_ling, train_svd], axis=1)
 y = train_ac['label'].values
 X_test = pd.concat([test_ac[ac_cols], test_ling, test_svd], axis=1)
 
-print(f"Fused Multimodal Matrix Constructed: {X.shape[1]} features (218 acoustic + 34 linguistic/semantic)!")
+print(f"Fused Multimodal Matrix: {X.shape[1]} features (218 acoustic + 36 linguistic/semantic)!")
 """))
 
 # Cell 4: Target & Feature Analysis Visualizations
@@ -208,8 +222,8 @@ axes[0].set_xlabel("Grammar Score (MOS Likert 0.0 to 5.0)")
 axes[0].set_ylabel("Candidate Count")
 
 # Linguistic vs Score Scatter
-sns.scatterplot(x=train_ling['ling_avg_word_length'], y=y, hue=train_ling['ling_ttr'], palette='viridis', ax=axes[1], alpha=0.8)
-axes[1].set_title("Vocabulary Sophistication (Word Length & TTR) vs Grammar Score", fontsize=13, fontweight='bold')
+sns.scatterplot(x=train_ling['ling_avg_word_length'], y=y, hue=train_ling['ling_guiraud'], palette='viridis', ax=axes[1], alpha=0.8)
+axes[1].set_title("Vocabulary Sophistication (Word Length & Guiraud Index) vs Grammar Score", fontsize=13, fontweight='bold')
 axes[1].set_xlabel("Average Spoken Word Length (Characters)")
 axes[1].set_ylabel("Grammar Score")
 
@@ -231,10 +245,11 @@ n_splits = 5
 skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
 
 models = {
-    'LGBM': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
-    'XGB': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
-    'ET': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
-    'Ridge': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))}
+    'CatBoost': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+    'XGB':      {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+    'LGBM':     {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+    'ET':       {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+    'Ridge':    {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))}
 }
 
 print(f"Beginning 5-Fold Stratified Cross-Validation on {X.shape[1]} multimodal features...")
@@ -243,14 +258,10 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, strat_labels_cat)):
     X_tr, y_tr = X.iloc[train_idx], y[train_idx]
     X_va, y_val = X.iloc[val_idx], y[val_idx]
     
-    # 1. LightGBM
-    lgb_m = lgb.LGBMRegressor(
-        n_estimators=700, learning_rate=0.025, max_depth=6, num_leaves=31,
-        subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0,
-        random_state=42 + fold, verbose=-1, n_jobs=-1
-    ).fit(X_tr, y_tr, eval_set=[(X_va, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
-    models['LGBM']['oof'][val_idx] = lgb_m.predict(X_va)
-    models['LGBM']['test'] += lgb_m.predict(X_test) / n_splits
+    # 1. CatBoost
+    mc = CatBoostRegressor(iterations=750, learning_rate=0.03, depth=5, random_seed=42 + fold, verbose=0, thread_count=-1).fit(X_tr, y_tr)
+    models['CatBoost']['oof'][val_idx] = mc.predict(X_va)
+    models['CatBoost']['test'] += mc.predict(X_test) / n_splits
     
     # 2. XGBoost
     xgb_m = xgb.XGBRegressor(
@@ -261,7 +272,16 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, strat_labels_cat)):
     models['XGB']['oof'][val_idx] = xgb_m.predict(X_va)
     models['XGB']['test'] += xgb_m.predict(X_test) / n_splits
     
-    # 3. ExtraTrees
+    # 3. LightGBM
+    lgb_m = lgb.LGBMRegressor(
+        n_estimators=700, learning_rate=0.025, max_depth=6, num_leaves=31,
+        subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0,
+        random_state=42 + fold, verbose=-1, n_jobs=-1
+    ).fit(X_tr, y_tr, eval_set=[(X_va, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
+    models['LGBM']['oof'][val_idx] = lgb_m.predict(X_va)
+    models['LGBM']['test'] += lgb_m.predict(X_test) / n_splits
+    
+    # 4. ExtraTrees
     et_m = ExtraTreesRegressor(
         n_estimators=350, max_depth=14, min_samples_split=4, max_features=0.55,
         random_state=42 + fold, n_jobs=-1
@@ -269,7 +289,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, strat_labels_cat)):
     models['ET']['oof'][val_idx] = et_m.predict(X_va)
     models['ET']['test'] += et_m.predict(X_test) / n_splits
     
-    # 4. Ridge
+    # 5. Ridge
     ridge_pipe = Pipeline([('scaler', RobustScaler()), ('ridge', Ridge(alpha=15.0, random_state=42 + fold))]).fit(X_tr, y_tr)
     models['Ridge']['oof'][val_idx] = ridge_pipe.predict(X_va)
     models['Ridge']['test'] += ridge_pipe.predict(X_test) / n_splits
@@ -278,7 +298,7 @@ print("All 5 folds completed successfully for all model families!")
 """))
 
 # Cell 6: Optimal Ensembling & Validation Evaluation
-cells.append(nbf.v4.new_code_cell("""m_keys = ['LGBM', 'XGB', 'ET', 'Ridge']
+cells.append(nbf.v4.new_code_cell("""m_keys = ['CatBoost', 'XGB', 'LGBM', 'ET', 'Ridge']
 oof_matrix = np.column_stack([np.clip(models[k]['oof'], 0.0, 5.0) for k in m_keys])
 test_matrix = np.column_stack([np.clip(models[k]['test'], 0.0, 5.0) for k in m_keys])
 
@@ -287,10 +307,10 @@ def blend_loss(weights):
     pred = np.clip(oof_matrix @ w, 0.0, 5.0)
     return np.sqrt(mean_squared_error(y, pred))
 
-res = minimize(blend_loss, [0.15, 0.55, 0.10, 0.20], method='SLSQP', bounds=[(0, 1)]*4, constraints={'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+res = minimize(blend_loss, [0.50, 0.20, 0.10, 0.10, 0.10], method='SLSQP', bounds=[(0, 1)]*5, constraints={'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
 weights = res.x
 weight_dict = dict(zip(m_keys, np.round(weights, 3)))
-print(f"Optimal Blending Weights: {weight_dict}")
+print(f"Optimal Super-Ensemble Weights: {weight_dict}")
 
 oof_ensemble = np.clip(oof_matrix @ weights, 0.0, 5.0)
 
@@ -309,6 +329,7 @@ print("=== MULTIMODAL OUT-OF-FOLD (VALIDATION) METRICS ===")
 print("="*55)
 print(f"Validation RMSE:               {val_rmse:.4f}")
 print(f"Validation Pearson Corr (r):   {val_pearson:.4f}  <-- Primary Kaggle Metric")
+print(f"Validation Leaderboard Loss:   {1 - val_pearson:.4f}  <-- Lower is better (Rank 1 is 0.3064)")
 print(f"Validation MAE:                {val_mae:.4f}")
 print(f"Validation Spearman Corr (rho):{val_spearman:.4f}")
 print("="*55)
@@ -319,12 +340,19 @@ cells.append(nbf.v4.new_code_cell("""# =========================================
 # COMPULSORY REQUIREMENT: TRAIN RMSE EVALUATION
 # ==============================================================================
 
-final_lgb = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.025, max_depth=6, num_leaves=31, subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0, random_state=42, verbose=-1, n_jobs=-1).fit(X, y)
+final_cb = CatBoostRegressor(iterations=750, learning_rate=0.03, depth=5, random_seed=42, verbose=0, thread_count=-1).fit(X, y)
 final_xgb = xgb.XGBRegressor(n_estimators=400, learning_rate=0.025, max_depth=5, subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0, random_state=42, verbosity=0, n_jobs=-1).fit(X, y)
+final_lgb = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.025, max_depth=6, num_leaves=31, subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0, random_state=42, verbose=-1, n_jobs=-1).fit(X, y)
 final_et = ExtraTreesRegressor(n_estimators=350, max_depth=14, min_samples_split=4, max_features=0.55, random_state=42, n_jobs=-1).fit(X, y)
 final_ridge = Pipeline([('scaler', RobustScaler()), ('ridge', Ridge(alpha=15.0, random_state=42))]).fit(X, y)
 
-train_preds = (weights[0]*final_lgb.predict(X) + weights[1]*final_xgb.predict(X) + weights[2]*final_et.predict(X) + weights[3]*final_ridge.predict(X))
+train_preds = (
+    weights[0]*final_cb.predict(X) +
+    weights[1]*final_xgb.predict(X) +
+    weights[2]*final_lgb.predict(X) +
+    weights[3]*final_et.predict(X) +
+    weights[4]*final_ridge.predict(X)
+)
 train_preds[is_noise_train] = 0.0
 train_preds = np.clip(train_preds, 0.0, 5.0)
 
@@ -366,9 +394,9 @@ plt.show()
 """))
 
 # Cell 9: Feature Importance Visualization
-cells.append(nbf.v4.new_code_cell("""importance_xgb = final_xgb.feature_importances_
-importance_lgb = final_lgb.feature_importances_ / np.sum(final_lgb.feature_importances_)
-avg_importance = (importance_xgb + importance_lgb) / 2.0
+cells.append(nbf.v4.new_code_cell("""importance_cb = final_cb.get_feature_importance() / np.sum(final_cb.get_feature_importance())
+importance_xgb = final_xgb.feature_importances_ / np.sum(final_xgb.feature_importances_)
+avg_importance = (importance_cb + importance_xgb) / 2.0
 
 imp_df = pd.DataFrame({
     'Feature': X.columns,
@@ -423,16 +451,17 @@ plt.show()
 cells.append(nbf.v4.new_code_cell("""summary_table = pd.DataFrame({
     'Model Approach': [
         'Acoustic-Only Baseline (eGeMAPS + Rhythm)',
-        'Multimodal Fusion (Acoustic + Text Grammar)'
+        'Multimodal Super-Ensemble (CatBoost + XGB + LGBM + Ridge + ET)'
     ],
     'Validation RMSE': ['0.7281', f'{val_rmse:.4f}'],
     'Validation Pearson r (Leaderboard Metric)': ['0.8105', f'{val_pearson:.4f}'],
+    'Validation Leaderboard Loss (1 - r)': ['0.1895', f'{1 - val_pearson:.4f}'],
     'Validation MAE': ['0.5753', f'{val_mae:.4f}'],
     'Validation Spearman rho': ['0.7173', f'{val_spearman:.4f}'],
     'Training RMSE (Compulsory)': ['0.1690', f'{train_rmse:.4f}'],
-    'Ensemble Composition': [
+    'Ensemble Weights': [
         'LGBM (18%) + XGB (55%) + ET (17%) + Ridge (10%)',
-        f'LGBM ({weights[0]*100:.1f}%) + XGB ({weights[1]*100:.1f}%) + ET ({weights[2]*100:.1f}%) + Ridge ({weights[3]*100:.1f}%)'
+        f'CatBoost ({weights[0]*100:.1f}%) + XGB ({weights[1]*100:.1f}%) + LGBM ({weights[2]*100:.1f}%) + ET ({weights[3]*100:.1f}%) + Ridge ({weights[4]*100:.1f}%)'
     ]
 })
 

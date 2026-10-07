@@ -12,6 +12,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 import lightgbm as lgb
 import xgboost as xgb
+from catboost import CatBoostRegressor
 from sklearn.ensemble import ExtraTreesRegressor
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import RobustScaler
@@ -29,10 +30,10 @@ def extract_linguistic_features_single(text, duration):
     if n_words == 0:
         return {
             'ling_word_count': 0, 'ling_char_count': 0, 'ling_avg_word_length': 0.0,
-            'ling_ttr': 0.0, 'ling_hapax_ratio': 0.0, 'ling_long_word_ratio': 0.0,
+            'ling_ttr': 0.0, 'ling_guiraud': 0.0, 'ling_hapax_ratio': 0.0, 'ling_long_word_ratio': 0.0,
             'ling_wpm': 0.0, 'ling_sent_count': 0, 'ling_avg_sent_len': 0.0,
             'ling_std_sent_len': 0.0, 'ling_max_sent_len': 0.0,
-            'ling_sub_conj': 0, 'ling_coord_conj': 0, 'ling_repetition_count': 0,
+            'ling_modal_ratio': 0.0, 'ling_sub_conj': 0.0, 'ling_coord_conj': 0.0, 'ling_repetition_count': 0,
             'ling_fk_grade': 0.0, 'ling_fog': 0.0, 'ling_dale_chall': 0.0,
             'ling_reading_ease': 0.0, 'ling_coleman': 0.0, 'ling_ari': 0.0
         }
@@ -40,8 +41,8 @@ def extract_linguistic_features_single(text, duration):
     unique_words = set(words)
     n_unique = len(unique_words)
     ttr = n_unique / n_words
+    guiraud = n_unique / np.sqrt(n_words)
     
-    # Word frequency & hapax legomena
     word_freq = {}
     for w in words: word_freq[w] = word_freq.get(w, 0) + 1
     hapax_count = sum(1 for w, c in word_freq.items() if c == 1)
@@ -52,7 +53,6 @@ def extract_linguistic_features_single(text, duration):
     long_words = sum(1 for l in word_lens if l >= 6)
     long_word_ratio = long_words / n_words
     
-    # Sentences
     sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
     sent_count = max(len(sentences), 1)
     sent_lens = [len(re.findall(r'\b[a-zA-Z]+\b', s)) for s in sentences]
@@ -60,19 +60,19 @@ def extract_linguistic_features_single(text, duration):
     std_sent_len = float(np.std(sent_lens)) if len(sent_lens) > 0 else 0.0
     max_sent_len = float(np.max(sent_lens)) if len(sent_lens) > 0 else float(n_words)
     
-    # Conjunctions (complex vs compound syntax)
+    modals = {'can', 'could', 'would', 'should', 'might', 'must', 'may', 'shall', 'ought'}
     sub_conjs = {'because', 'although', 'since', 'while', 'whereas', 'unless', 'though', 'if', 'even', 'whether', 'as'}
     coord_conjs = {'and', 'but', 'so', 'or', 'yet', 'for', 'nor'}
-    sub_count = sum(1 for w in words if w in sub_conjs)
-    coord_count = sum(1 for w in words if w in coord_conjs)
     
-    # Repetition / Disfluency (immediate repeats like "the the", "I I")
+    modal_count = sum(1 for w in words if w in modals) / n_words
+    sub_count = sum(1 for w in words if w in sub_conjs) / n_words
+    coord_count = sum(1 for w in words if w in coord_conjs) / n_words
+    
     reps = 0
     for i in range(len(words) - 1):
         if words[i] == words[i+1]:
             reps += 1
             
-    # Readability metrics
     try: fk_grade = float(textstat.flesch_kincaid_grade(text))
     except: fk_grade = 0.0
     try: fog = float(textstat.gunning_fog(text))
@@ -91,6 +91,7 @@ def extract_linguistic_features_single(text, duration):
         'ling_char_count': len(text),
         'ling_avg_word_length': avg_wlen,
         'ling_ttr': ttr,
+        'ling_guiraud': guiraud,
         'ling_hapax_ratio': hapax_ratio,
         'ling_long_word_ratio': long_word_ratio,
         'ling_wpm': wpm,
@@ -98,6 +99,7 @@ def extract_linguistic_features_single(text, duration):
         'ling_avg_sent_len': avg_sent_len,
         'ling_std_sent_len': std_sent_len,
         'ling_max_sent_len': max_sent_len,
+        'ling_modal_ratio': modal_count,
         'ling_sub_conj': sub_count,
         'ling_coord_conj': coord_count,
         'ling_repetition_count': reps,
@@ -117,11 +119,9 @@ def build_multimodal_dataset():
     train_tr = pd.read_csv('transcripts_train.csv')
     test_tr = pd.read_csv('transcripts_test.csv')
     
-    # Merge transcripts
     train_merged = train_ac.merge(train_tr[['filename', 'transcript']], on='filename', how='left')
     test_merged = test_ac.merge(test_tr[['filename', 'transcript']], on='filename', how='left')
     
-    # Extract linguistic features
     print("Extracting linguistic & syntactic features...")
     train_ling = [extract_linguistic_features_single(row['transcript'], row['duration']) for _, row in train_merged.iterrows()]
     test_ling = [extract_linguistic_features_single(row['transcript'], row['duration']) for _, row in test_merged.iterrows()]
@@ -141,7 +141,6 @@ def build_multimodal_dataset():
     train_svd = pd.DataFrame(svd_matrix[:n_tr], columns=[f'tfidf_svd_{i}' for i in range(16)])
     test_svd = pd.DataFrame(svd_matrix[n_tr:], columns=[f'tfidf_svd_{i}' for i in range(16)])
     
-    # Combine Acoustic + Linguistic + SVD
     drop_cols = ['filename', 'label', 'transcript']
     ac_cols = [c for c in train_ac.columns if c not in drop_cols]
     
@@ -149,7 +148,7 @@ def build_multimodal_dataset():
     X_test = pd.concat([test_ac[ac_cols], test_ling_df, test_svd], axis=1)
     y_train = train_ac['label'].values
     
-    print(f"Fused Multimodal Matrix: {X_train.shape[1]} features (218 acoustic + 36 linguistic/semantic)!")
+    print(f"Fused Multimodal Matrix: {X_train.shape[1]} features!")
     return X_train, y_train, X_test, train_ac, test_ac
 
 def train_and_evaluate(X, y, X_test, train_df, test_df):
@@ -166,25 +165,22 @@ def train_and_evaluate(X, y, X_test, train_df, test_df):
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     
     models = {
-        'LGBM': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
-        'XGB': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
-        'ET': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
-        'Ridge': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))}
+        'CatBoost': {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+        'XGB':      {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+        'LGBM':     {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+        'ET':       {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))},
+        'Ridge':    {'oof': np.zeros(len(y)), 'test': np.zeros(len(X_test))}
     }
     
-    print("\n--- Training Multimodal 5-Fold Stratified Cross-Validation ---")
+    print("\n--- Training Multimodal 5-Fold Stratified Cross-Validation with CatBoost Super-Ensemble ---")
     for fold, (train_idx, val_idx) in enumerate(skf.split(X, strat_labels_cat)):
         X_tr, y_tr = X.iloc[train_idx], y[train_idx]
         X_va, y_val = X.iloc[val_idx], y[val_idx]
         
-        # 1. LightGBM
-        lgb_m = lgb.LGBMRegressor(
-            n_estimators=700, learning_rate=0.025, max_depth=6, num_leaves=31,
-            subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0,
-            random_state=42 + fold, verbose=-1, n_jobs=-1
-        ).fit(X_tr, y_tr, eval_set=[(X_va, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
-        models['LGBM']['oof'][val_idx] = lgb_m.predict(X_va)
-        models['LGBM']['test'] += lgb_m.predict(X_test) / n_splits
+        # 1. CatBoost
+        mc = CatBoostRegressor(iterations=750, learning_rate=0.03, depth=5, random_seed=42 + fold, verbose=0, thread_count=-1).fit(X_tr, y_tr)
+        models['CatBoost']['oof'][val_idx] = mc.predict(X_va)
+        models['CatBoost']['test'] += mc.predict(X_test) / n_splits
         
         # 2. XGBoost
         xgb_m = xgb.XGBRegressor(
@@ -195,7 +191,16 @@ def train_and_evaluate(X, y, X_test, train_df, test_df):
         models['XGB']['oof'][val_idx] = xgb_m.predict(X_va)
         models['XGB']['test'] += xgb_m.predict(X_test) / n_splits
         
-        # 3. ExtraTrees
+        # 3. LightGBM
+        lgb_m = lgb.LGBMRegressor(
+            n_estimators=700, learning_rate=0.025, max_depth=6, num_leaves=31,
+            subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0,
+            random_state=42 + fold, verbose=-1, n_jobs=-1
+        ).fit(X_tr, y_tr, eval_set=[(X_va, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
+        models['LGBM']['oof'][val_idx] = lgb_m.predict(X_va)
+        models['LGBM']['test'] += lgb_m.predict(X_test) / n_splits
+        
+        # 4. ExtraTrees
         et_m = ExtraTreesRegressor(
             n_estimators=350, max_depth=14, min_samples_split=4, max_features=0.55,
             random_state=42 + fold, n_jobs=-1
@@ -203,13 +208,13 @@ def train_and_evaluate(X, y, X_test, train_df, test_df):
         models['ET']['oof'][val_idx] = et_m.predict(X_va)
         models['ET']['test'] += et_m.predict(X_test) / n_splits
         
-        # 4. Ridge
+        # 5. Ridge
         ridge_pipe = Pipeline([('scaler', RobustScaler()), ('ridge', Ridge(alpha=15.0, random_state=42 + fold))]).fit(X_tr, y_tr)
         models['Ridge']['oof'][val_idx] = ridge_pipe.predict(X_va)
         models['Ridge']['test'] += ridge_pipe.predict(X_test) / n_splits
 
     # Optimal Ensembling
-    m_keys = ['LGBM', 'XGB', 'ET', 'Ridge']
+    m_keys = ['CatBoost', 'XGB', 'LGBM', 'ET', 'Ridge']
     oof_matrix = np.column_stack([np.clip(models[k]['oof'], 0.0, 5.0) for k in m_keys])
     test_matrix = np.column_stack([np.clip(models[k]['test'], 0.0, 5.0) for k in m_keys])
     
@@ -218,7 +223,7 @@ def train_and_evaluate(X, y, X_test, train_df, test_df):
         pred = np.clip(oof_matrix @ w, 0.0, 5.0)
         return np.sqrt(mean_squared_error(y, pred))
         
-    res = minimize(loss_fn, [0.3, 0.4, 0.2, 0.1], method='SLSQP', bounds=[(0, 1)]*4, constraints={'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+    res = minimize(loss_fn, [0.50, 0.20, 0.10, 0.10, 0.10], method='SLSQP', bounds=[(0, 1)]*5, constraints={'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
     weights = res.x
     print(f"Optimal Blending Weights: {dict(zip(m_keys, np.round(weights, 3)))}")
     
@@ -236,17 +241,25 @@ def train_and_evaluate(X, y, X_test, train_df, test_df):
     print("="*55)
     print(f"Validation RMSE:               {val_rmse:.4f}")
     print(f"Validation Pearson Corr (r):   {val_pearson:.4f}  <-- Leaderboard Metric")
+    print(f"Validation Leaderboard Loss:   {1 - val_pearson:.4f}  <-- Top rank is 0.3064")
     print(f"Validation MAE:                {val_mae:.4f}")
     print(f"Validation Spearman Corr (rho):{val_spearman:.4f}")
     print("="*55)
     
     # Train full model for mandatory Train RMSE
-    final_lgb = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.025, max_depth=6, num_leaves=31, subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0, random_state=42, verbose=-1, n_jobs=-1).fit(X, y)
+    final_cb = CatBoostRegressor(iterations=750, learning_rate=0.03, depth=5, random_seed=42, verbose=0, thread_count=-1).fit(X, y)
     final_xgb = xgb.XGBRegressor(n_estimators=400, learning_rate=0.025, max_depth=5, subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0, random_state=42, verbosity=0, n_jobs=-1).fit(X, y)
+    final_lgb = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.025, max_depth=6, num_leaves=31, subsample=0.8, colsample_bytree=0.65, reg_alpha=0.1, reg_lambda=1.0, random_state=42, verbose=-1, n_jobs=-1).fit(X, y)
     final_et = ExtraTreesRegressor(n_estimators=350, max_depth=14, min_samples_split=4, max_features=0.55, random_state=42, n_jobs=-1).fit(X, y)
     final_ridge = Pipeline([('scaler', RobustScaler()), ('ridge', Ridge(alpha=15.0, random_state=42))]).fit(X, y)
     
-    train_preds = (weights[0]*final_lgb.predict(X) + weights[1]*final_xgb.predict(X) + weights[2]*final_et.predict(X) + weights[3]*final_ridge.predict(X))
+    train_preds = (
+        weights[0]*final_cb.predict(X) +
+        weights[1]*final_xgb.predict(X) +
+        weights[2]*final_lgb.predict(X) +
+        weights[3]*final_et.predict(X) +
+        weights[4]*final_ridge.predict(X)
+    )
     train_preds[is_noise_train] = 0.0
     train_preds = np.clip(train_preds, 0.0, 5.0)
     
