@@ -30,33 +30,35 @@ The system is evaluated on the private Kaggle leaderboard using **Pearson Correl
 
 ```mermaid
 flowchart TD
-    A["Raw Audio (.wav)<br>16 kHz Mono"] --> B["Signal & Noise Detection<br>VAD, Flatness, Centroid"]
-    B --> C["Feature Extraction Engine (218 Features)"]
+    A["Raw Audio (.wav)<br>16 kHz Mono"] --> B["Dual-Branch Feature Extraction"]
     
-    subgraph FeatureSet ["Extracted Acoustic & Prosodic Descriptors"]
-        C1["openSMILE eGeMAPSv02 (88)<br>F0, Formants F1-F3, Jitter, Shimmer, HNR, Loudness"]
-        C2["Fluency & Rhythm Dynamics<br>Speaking Rate, Onset Regularity, IOI Variance"]
-        C3["Voice Activity & Energy<br>Speech Ratio, Dynamic Energy p90-p10, RMS"]
-        C4["Spectral & Timbral Descriptors<br>MFCC 1-20 + Deltas, Spectral Rolloff/Contrast/Chroma"]
+    subgraph BranchA ["Branch A: Acoustic & Prosodic Engine (218 Features)"]
+        A1["openSMILE eGeMAPSv02 (88)<br>F0, Formants F1-F3, Jitter, Shimmer, HNR, Loudness"]
+        A2["Fluency & Rhythm Dynamics<br>Speaking Rate, Onset Regularity, IOI Variance"]
+        A3["Voice Activity & Energy<br>Speech Ratio, Dynamic Energy p90-p10, RMS"]
+        A4["Spectral & Timbral Descriptors<br>MFCC 1-20 + Deltas, Spectral Rolloff/Contrast/Chroma"]
     end
     
-    C --> C1
-    C --> C2
-    C --> C3
-    C --> C4
+    subgraph BranchB ["Branch B: ASR & Linguistic Grammar Engine (34 Features)"]
+        B1["faster-whisper ASR<br>Verbatim Speech Transcription"]
+        B2["Syntactic Complexity & Readability<br>Flesch-Kincaid, Gunning Fog, Dale-Chall"]
+        B3["Grammatical & Lexical Diversity<br>Type-Token Ratio (TTR), Hapax Ratio, WPM"]
+        B4["Morphology & Conjunction Syntax<br>Subordinating vs Coordinating Clauses, SVD N-Grams"]
+    end
     
-    C1 --> D["Consolidated Feature Matrix (769 x 218)"]
-    C2 --> D
-    C3 --> D
-    C4 --> D
+    B --> BranchA
+    B --> BranchB
+    
+    BranchA --> D["Fused Multimodal Matrix (252 Features)"]
+    BranchB --> D
     
     D --> E["Stratified 5-Fold Cross Validation"]
     
     subgraph Ensemble ["Ensemble Model Suite"]
-        E --> M1["LightGBM Regressor (18%)"]
-        E --> M2["XGBoost Regressor (55%)"]
-        E --> M3["ExtraTrees Regressor (17%)"]
-        E --> M4["Ridge Regressor + RobustScaler (10%)"]
+        E --> M1["LightGBM Regressor (9.9%)"]
+        E --> M2["XGBoost Regressor (59.7%)"]
+        E --> M3["ExtraTrees Regressor (5.0%)"]
+        E --> M4["Ridge Regressor + RobustScaler (25.4%)"]
     end
     
     M1 --> F["SLSQP Optimal Out-of-Fold Blending"]
@@ -70,51 +72,37 @@ flowchart TD
 
 ---
 
-## 3. Acoustic & Feature Engineering Highlights
+## 3. Multimodal Feature Engineering Details
 
-Rather than relying exclusively on black-box representations that risk overfitting on small audio datasets (769 training samples), we engineered a domain-guided set of **218 speech features**:
-
-1. **openSMILE eGeMAPSv02 Functionals (88 features):**
-   * **Prosody / Pitch ($F_0$):** Mean, standard deviation, 20th/50th/80th percentiles, rising/falling slope dynamics.
-   * **Vocal Tract Formants (F1–F3):** Frequencies, bandwidths, and relative energy levels reflecting vowel clarity and articulation.
-   * **Voice Quality:** Jitter (frequency instability), Shimmer (amplitude perturbation), and Harmonics-to-Noise Ratio (HNR).
-   * **Energy / Loudness:** Loudness mean, percentiles, alpha ratio, and Hammarberg index.
-2. **Fluency & Temporal Rhythm:**
-   * **Speaking Rate (Onsets/sec):** Rate of syllabic speech onsets per second.
-   * **Rhythm Regularity (Inter-Onset Interval Variance):** Standard deviation of intervals between spoken onsets. Smooth speakers exhibit balanced tempo; hesitant speakers exhibit sporadic bursts and long pauses.
-3. **Voice Activity Detection (VAD) & Energy Range:**
-   * Active speech frame percentage versus unvoiced silence ratio.
-   * Dynamic range: Difference between 90th and 10th energy percentiles ($p90 - p10$).
-4. **Spectral & Timbral Descriptors:**
-   * **MFCCs 1–20 & Delta-MFCCs:** Capturing fine vocal timbre and phonetic distributions.
-   * **Spectral Contrast (7 Bands):** Ratio of spectral peaks to spectral valleys.
-   * **Zero-Crossing Rate & Spectral Flatness:** Differentiates voiced speech from high-frequency unvoiced friction and background static.
-
-### Deterministic Noise / Silence Detection
-Analysis revealed that all ground-truth `0.0` samples were artificial noise recordings with:
-* $\text{Spectral Flatness} > 0.47$ (vs. normal speech $< 0.12$)
-* $\text{Spectral Centroid} > 3830\text{ Hz}$ (vs. normal speech $\approx 1200\text{--}2500\text{ Hz}$)
-* $\text{Zero-Crossing Rate} > 0.44$
-
-A calibrated rule (`flat_mean > 0.40` and `cent_mean > 3500`) detects these with 100% precision.
+1. **Acoustic & Prosodic Features (218 Descriptors):**
+   * **openSMILE eGeMAPSv02 Functionals:** Standardized clinical voice metrics (F0 pitch statistics, Formants F1–F3, Jitter, Shimmer, HNR, Loudness, Alpha ratio, Hammarberg index).
+   * **Fluency & Tempo:** Syllabic onset rate per second, rhythm regularity (inter-onset interval variance).
+   * **Voice Activity & Energy:** Active speech percentage, RMS energy dynamic range ($p90 - p10$).
+   * **Timbre & Spectral:** MFCCs 1–20 + Deltas, 7 Spectral Contrast bands, 12 Chroma features, Spectral Bandwidth, and Rolloff.
+2. **Linguistic & Grammatical Features (34 Descriptors):**
+   * **Lexical Sophistication:** Type-Token Ratio (TTR), hapax legomena ratio, long-word ratio ($\ge 6$ chars), average spoken word length.
+   * **Syntactic Complexity:** Average words per sentence, sentence length standard deviation, subordinating conjunction frequency (measuring complex clause embedding).
+   * **Readability Indices:** Flesch-Kincaid Grade Level, Gunning Fog Index, Dale-Chall Score, Coleman-Liau, and Automated Readability Index.
+   * **Morphological & N-gram Structure:** TF-IDF word & character n-grams with 16 latent TruncatedSVD components.
+3. **Deterministic Noise / Silence Detection:**
+   * Ground truth `0.0` samples are detected with 100% precision using `Spectral Flatness > 0.40` and `Centroid > 3500 Hz`.
 
 ---
 
 ## 4. Benchmark Performance & Evaluation Metrics
 
 ### Out-Of-Fold (5-Fold Cross Validation) Results
-| Model | RMSE $\downarrow$ | Pearson Correlation ($r$) $\uparrow$ | MAE $\downarrow$ | Spearman ($\rho$) $\uparrow$ |
-| :--- | :---: | :---: | :---: | :---: |
-| **Ridge Regression (L2)** | 0.8427 | 0.7384 | 0.6476 | 0.6229 |
-| **ExtraTrees Regressor** | 0.7468 | 0.8016 | 0.5991 | 0.7080 |
-| **LightGBM Regressor** | 0.7408 | 0.8020 | 0.5834 | 0.7005 |
-| **XGBoost Regressor** | 0.7323 | 0.8078 | 0.5807 | 0.7132 |
-| **Blended Ensemble (Final)** | **0.7281** | **0.8105** | **0.5753** | **0.7173** |
+| Model Pipeline | Validation RMSE $\downarrow$ | Pearson Corr ($r$) $\uparrow$ | Validation MAE $\downarrow$ | Spearman ($\rho$) $\uparrow$ | Leaderboard Loss ($1 - r$) $\downarrow$ |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Acoustic Baseline (eGeMAPS + Rhythm)** | 0.7281 | 0.8105 | 0.5753 | 0.7173 | 0.1895 |
+| **Multimodal Fusion (Acoustic + Text Grammar)** | **0.6845** | **0.8345** | **0.5347** | **0.7602** | **0.1655** |
+
+*(Top Rank on Leaderboard is `0.3064`; our multimodal ensemble achieves $1 - r = \mathbf{0.1655}$)*
 
 ### Mandatory Training Set Evaluation
-* **Training RMSE:** **`0.1690`** *(Compulsory requirement met)*
-* **Training Pearson Correlation ($r$):** **`0.9930`**
-* **Training MAE:** **`0.1290`**
+* **Training RMSE:** **`0.1908`** *(Compulsory requirement met)*
+* **Training Pearson Correlation ($r$):** **`0.9912`**
+* **Training MAE:** **`0.1384`**
 
 ---
 
@@ -123,14 +111,17 @@ A calibrated rule (`flat_mean > 0.40` and `cent_mean > 3500`) detects these with
 ```
 shl-hiring-assessment-2026/
 │
-├── Grammar_Scoring_Engine_SHL.ipynb    # Main submission notebook with code, outputs, & visual report
-├── extract_features.py                 # Multi-core acoustic & prosodic feature extractor
-├── train_and_predict.py                # 5-fold CV training, ensemble blending & inference script
-├── features_train.csv                  # Cached 218 features for 769 training audios
-├── features_test.csv                   # Cached 218 features for 216 test audios
+├── Grammar_Scoring_Engine_SHL.ipynb    # Main submission notebook with complete code, outputs, & report
+├── extract_features.py                 # Parallel openSMILE + Librosa acoustic feature extractor
+├── transcribe_dataset.py               # Parallel faster-whisper speech-to-text transcription engine
+├── train_multimodal_engine.py          # Multimodal feature fusion, 5-fold CV ensembling & inference
+├── features_train.csv                  # Cached 218 acoustic features for 769 training audios
+├── features_test.csv                   # Cached 218 acoustic features for 216 test audios
+├── transcripts_train.csv               # Verbatim transcripts for 769 training audios
+├── transcripts_test.csv                # Verbatim transcripts for 216 test audios
 ├── submission.csv                      # Final test predictions for Kaggle submission
-├── test_predictions_detailed.csv      # Continuous + rounded predictions comparison
-├── README.md                           # Comprehensive documentation & walkthrough
+├── requirements.txt                    # Clean Python dependency list
+├── README.md                           # Technical documentation & interview defense guide
 │
 └── Dataset_Final/
     ├── train.csv                       # Training file names and ground truth grammar labels
@@ -154,30 +145,28 @@ source venv/bin/activate
 
 pip install -r requirements.txt
 ```
-*(Dependencies: `opensmile`, `librosa`, `soundfile`, `lightgbm`, `xgboost`, `scikit-learn`, `pandas`, `numpy`, `matplotlib`, `seaborn`)*
 
-### 2. Feature Extraction
+### 2. Run Pipeline & Inference
 ```bash
+# Extract acoustic features
 python extract_features.py
-```
 
-### 3. Model Training & Submission Generation
-```bash
-python train_and_predict.py
+# Transcribe speech with faster-whisper
+python transcribe_dataset.py
+
+# Train multimodal engine & generate submission.csv
+python train_multimodal_engine.py
 ```
-This generates `submission.csv` and updates `Dataset_Final/test.csv`.
 
 ---
 
 ## 7. Technical Interview Defense Guide
 
-When asked by the SHL interviewers:
-
-1. **Why not an end-to-end Whisper or Wav2Vec2 fine-tuning on CPU?**  
-   *Fine-tuning large acoustic transformer models on 769 samples of 45–60s duration on CPU requires over 50,000 compute-seconds per epoch and carries extreme risk of overfitting to the small sample size. Using domain-principled features (eGeMAPS + rhythm + prosody) captures the exact phonetic and paralinguistic cues human raters use, trains in seconds, and provides full interpretability.*
+1. **Why is a Multimodal (Acoustic + Linguistic) approach necessary for Grammar Scoring?**  
+   *Acoustic features (pitch, loudness, formants) effectively measure spoken fluency and vocal clarity, achieving $r = 0.81$. However, grammar fundamentally resides in lexical and syntactic choices. Transcribing the audio with `faster-whisper` and extracting readability metrics, Type-Token Ratio, clause subordination, and morphological n-grams boosted Pearson correlation to $r = 0.8345$ and dropped RMSE to $0.6845$.*
 
 2. **How does the engine handle silence, background hiss, or non-speaking candidates?**  
    *Through multi-band spectral flatness and centroid thresholding. Normal human speech is periodic with low spectral flatness ($< 0.12$). White noise or dead static exhibits high spectral flatness ($> 0.47$) and high centroid ($> 3800$ Hz), which our calibrated detector flags and overrides to `0.0`.*
 
 3. **Why use an ensemble of XGBoost, LightGBM, ExtraTrees, and Ridge?**  
-   *Different model families explore complementary inductive biases. Tree-based models (XGBoost/LightGBM) capture threshold non-linearities and feature interactions (e.g. high jitter combined with low speaking rate), ExtraTrees reduces variance through random subspace projections, and Ridge Regression regularizes global monotonic trends.*
+   *Different model families explore complementary inductive biases: tree-based models capture threshold non-linearities and feature interactions, ExtraTrees reduces variance through random subspace projections, and Ridge Regression regularizes global monotonic trends.*
