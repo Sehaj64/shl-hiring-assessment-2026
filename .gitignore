@@ -13,5 +13,7 @@ __pycache__/
 # CatBoost info
 catboost_info/
 
-# Scratch directory
+# Scratch directory & embeddings cache
 scratch/
+scratch_*
+*.npy

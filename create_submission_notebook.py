@@ -267,26 +267,34 @@ print("Extracting linguistic, syntactic complexity & POS tagging features...")
 train_ling = pd.DataFrame([extract_pos_and_linguistic_features(r['transcript'], r['duration']) for _, r in train_merged.iterrows()])
 test_ling = pd.DataFrame([extract_pos_and_linguistic_features(r['transcript'], r['duration']) for _, r in test_merged.iterrows()])
 
-# TF-IDF + SVD for syntactic & semantic structure
+# Neural Sentence Transformer embeddings (all-MiniLM-L6-v2) + PCA
 all_texts = train_merged['transcript'].fillna('').tolist() + test_merged['transcript'].fillna('').tolist()
-tfidf = TfidfVectorizer(max_features=1000, ngram_range=(1, 2), stop_words='english')
-tfidf_mat = tfidf.fit_transform(all_texts)
-svd = TruncatedSVD(n_components=16, random_state=42)
-svd_mat = svd.fit_transform(tfidf_mat)
+emb_file = 'scratch_embeddings.npy'
+if os.path.exists(emb_file):
+    embs = np.load(emb_file)
+else:
+    from sentence_transformers import SentenceTransformer
+    sbert = SentenceTransformer('all-MiniLM-L6-v2')
+    embs = sbert.encode(all_texts, batch_size=64, show_progress_bar=False)
+    np.save(emb_file, embs)
+
+from sklearn.decomposition import PCA
+pca = PCA(n_components=32, random_state=42)
+embs_pca = pca.fit_transform(embs)
 
 n_tr = len(train_merged)
-train_svd = pd.DataFrame(svd_mat[:n_tr], columns=[f'tfidf_svd_{i}' for i in range(16)])
-test_svd = pd.DataFrame(svd_mat[n_tr:], columns=[f'tfidf_svd_{i}' for i in range(16)])
+train_emb = pd.DataFrame(embs_pca[:n_tr], columns=[f'emb_pca_{i}' for i in range(32)])
+test_emb = pd.DataFrame(embs_pca[n_tr:], columns=[f'emb_pca_{i}' for i in range(32)])
 
 # Construct Full Fused Matrix
 drop_cols = ['filename', 'label', 'transcript']
 ac_cols = [c for c in train_ac.columns if c not in drop_cols]
 
-X = pd.concat([train_ac[ac_cols], train_ling, train_svd], axis=1)
+X = pd.concat([train_ac[ac_cols], train_ling, train_emb], axis=1)
 y = train_ac['label'].values
-X_test = pd.concat([test_ac[ac_cols], test_ling, test_svd], axis=1)
+X_test = pd.concat([test_ac[ac_cols], test_ling, test_emb], axis=1)
 
-print(f"Fused Multimodal Matrix: {X.shape[1]} features (218 acoustic + 36 linguistic/POS + 16 SVD)!")
+print(f"Fused Multimodal Matrix: {X.shape[1]} features (218 acoustic + 36 linguistic/POS + 32 SBERT-PCA)!")
 """))
 
 # Cell 4: Target & Feature Analysis Visualizations
@@ -551,7 +559,7 @@ summary_table = pd.DataFrame({
     'Model Approach': [
         'Acoustic-Only Baseline (eGeMAPS + Rhythm)',
         'Multimodal 5-Fold Ensemble',
-        'Multimodal 10-Fold Super-Ensemble + POS Syntax'
+        'Multimodal 10-Fold Neural-Augmented Super-Ensemble (POS + SBERT)'
     ],
     'Validation RMSE': ['0.7281', '0.6710', f'{val_rmse:.4f}'],
     'Validation Pearson r (Leaderboard Metric)': ['0.8105', '0.8416', f'{val_pearson:.4f}'],

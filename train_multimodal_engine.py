@@ -173,26 +173,33 @@ def build_multimodal_dataset():
     train_ling_df = pd.DataFrame(train_ling)
     test_ling_df = pd.DataFrame(test_ling)
     
-    # TF-IDF + TruncatedSVD for vocabulary semantics
+    # Neural Sentence Transformer embeddings (all-MiniLM-L6-v2) + PCA
     all_texts = train_merged['transcript'].fillna('').tolist() + test_merged['transcript'].fillna('').tolist()
-    tfidf = TfidfVectorizer(max_features=1000, ngram_range=(1, 2), stop_words='english')
-    tfidf_matrix = tfidf.fit_transform(all_texts)
-    
-    svd = TruncatedSVD(n_components=16, random_state=42)
-    svd_matrix = svd.fit_transform(tfidf_matrix)
+    emb_file = 'scratch_embeddings.npy'
+    if os.path.exists(emb_file):
+        embs = np.load(emb_file)
+    else:
+        from sentence_transformers import SentenceTransformer
+        sbert = SentenceTransformer('all-MiniLM-L6-v2')
+        embs = sbert.encode(all_texts, batch_size=64, show_progress_bar=False)
+        np.save(emb_file, embs)
+        
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=32, random_state=42)
+    embs_pca = pca.fit_transform(embs)
     
     n_tr = len(train_merged)
-    train_svd = pd.DataFrame(svd_matrix[:n_tr], columns=[f'tfidf_svd_{i}' for i in range(16)])
-    test_svd = pd.DataFrame(svd_matrix[n_tr:], columns=[f'tfidf_svd_{i}' for i in range(16)])
+    train_emb_df = pd.DataFrame(embs_pca[:n_tr], columns=[f'emb_pca_{i}' for i in range(32)])
+    test_emb_df = pd.DataFrame(embs_pca[n_tr:], columns=[f'emb_pca_{i}' for i in range(32)])
     
     drop_cols = ['filename', 'label', 'transcript']
     ac_cols = [c for c in train_ac.columns if c not in drop_cols]
     
-    X_train = pd.concat([train_ac[ac_cols], train_ling_df, train_svd], axis=1)
-    X_test = pd.concat([test_ac[ac_cols], test_ling_df, test_svd], axis=1)
+    X_train = pd.concat([train_ac[ac_cols], train_ling_df, train_emb_df], axis=1)
+    X_test = pd.concat([test_ac[ac_cols], test_ling_df, test_emb_df], axis=1)
     y_train = train_ac['label'].values
     
-    print(f"Fused Multimodal Matrix: {X_train.shape[1]} features (218 acoustic + 36 linguistic/POS + 16 SVD)!")
+    print(f"Fused Multimodal Matrix: {X_train.shape[1]} features (218 acoustic + 36 linguistic/POS + 32 SBERT-PCA)!")
     return X_train, y_train, X_test, train_ac, test_ac
 
 def train_and_evaluate(X, y, X_test, train_df, test_df):

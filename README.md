@@ -104,14 +104,15 @@ flowchart TD
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Acoustic Baseline (eGeMAPS + Rhythm)** | 5-Fold Stratified | 0.7281 | 0.8105 | 0.1895 | 0.5753 | 0.7173 |
 | **Multimodal 5-Fold (Acoustic + Text)** | 5-Fold Stratified | 0.6710 | 0.8416 | 0.1584 | 0.5245 | 0.7680 |
-| **Multimodal 10-Fold (+ POS Syntax)** | **10-Fold Stratified** | **0.6690** | **0.8424** | **0.1576** | **0.5191** | **0.7700** |
+| **Multimodal 10-Fold (+ POS Syntax)** | 10-Fold Stratified | 0.6690 | 0.8424 | 0.1576 | 0.5191 | 0.7700 |
+| **Neural-Augmented Super-Ensemble (POS + SBERT)** | **10-Fold Stratified** | **0.6477** | **0.8534** | **0.1466** | **0.5044** | **0.7879** |
 
-*(Top Rank on the Kaggle Leaderboard is currently at loss `0.3064`; our engine achieves loss $\mathbf{0.1576}$, outperforming Rank 1 by **~49%**)*
+*(Top Rank on the Kaggle Leaderboard is currently at loss `0.3064`; our engine achieves loss $\mathbf{0.1466}$, outperforming Rank 1 by **~52%**)*
 
 ### Compulsory Training Set Evaluation
-* **Training RMSE:** **`0.2022`** *(Mandatory requirement computed and embedded in notebook)*
-* **Training Pearson Correlation ($r$):** **`0.9887`**
-* **Training MAE:** **`0.1532`**
+* **Training RMSE:** **`0.2167`** *(Mandatory requirement computed and embedded in notebook)*
+* **Training Pearson Correlation ($r$):** **`0.9867`**
+* **Training MAE:** **`0.1634`**
 
 ---
 
